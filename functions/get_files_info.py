@@ -3,7 +3,6 @@ from .constrain_to_pwd import constrain_to_pwd
 
 def get_files_info(working_directory, directory=None):
     pwd, dir_path = constrain_to_pwd(working_directory, directory, "list")
-    print(pwd, dir_path)
     if not pwd:
         return dir_path
     if not dir_path.is_dir():

@@ -2,6 +2,7 @@ import argparse
 import os
 import sys
 from dotenv import load_dotenv
+from functions.call_function import call_function
 
 load_dotenv()
 api_key = os.environ.get("GEMINI_API_KEY")
@@ -11,35 +12,12 @@ from google.genai import types
 
 client = genai.Client(api_key=api_key)
 
+
 def print_token_usage(usage_metadata):
     print(f"Prompt tokens: {usage_metadata.prompt_token_count}")
     print(f"Response tokens: {usage_metadata.candidates_token_count}")
 
-if __name__ == "__main__":
-    # Argument parsing
-    parser = argparse.ArgumentParser(description="Chat with gemini-2.0-flash-001.")
-    parser.add_argument("prompt", type=str, help="A prompt for gemini.")
-    parser.add_argument("--verbose", help="Toggle for verbose output.", 
-                        required=False, action="store_true")
-    args = parser.parse_args()
-    
-    # Set-up initial query
-    system_prompt = """
-    You are a helpful AI coding agent.
-
-    When a user asks a question or makes a request, make a function call plan. You can 
-    perform the following operations:
-
-    - List files and directories
-    - Read file contents
-    - Execute Python files with optional arguments
-    - Write or overwrite files
-
-    All paths you provide should be relative to the working directory. You do not need 
-    to specify the working directory in your function calls as it is automatically 
-    injected for security reasons.
-    """
-    messages = [types.Content(role="user", parts=[types.Part(text=args.prompt)])]
+def make_available_functions():
     # Function schema
     schema_get_files_info = types.FunctionDeclaration(
         name="get_files_info",
@@ -114,11 +92,10 @@ if __name__ == "__main__":
             schema_write_file
         ]
     )
+    return available_functions
+
+def call_agent(config, messages):
     try:
-        config = types.GenerateContentConfig(
-            tools=[available_functions], 
-            system_instruction=system_prompt
-        )
         response = client.models.generate_content(
             model="gemini-2.0-flash-001",
             contents=messages,
@@ -127,10 +104,57 @@ if __name__ == "__main__":
     except genai.errors.ServerError:
         print("Model is overloaded. Try again later!")
         sys.exit(1)
+    return response
+
+if __name__ == "__main__":
+    # Argument parsing
+    parser = argparse.ArgumentParser(description="Chat with gemini-2.0-flash-001.")
+    parser.add_argument("prompt", type=str, help="A prompt for gemini.")
+    parser.add_argument("--verbose", help="Toggle for verbose output.", 
+                        required=False, action="store_true")
+    args = parser.parse_args()
     
-    # Print function calls
-    for func_call in response.function_calls:
-        print(f"Calling function: {func_call.name}({func_call.args})")
+    # Set-up initial query
+    system_prompt = """
+    You are a helpful AI coding agent.
+
+    When a user asks a question or makes a request, make a function call plan. You can 
+    perform the following operations:
+
+    - List files and directories
+    - Read file contents
+    - Execute Python files with optional arguments
+    - Write or overwrite files
+
+    All paths you provide should be relative to the working directory. You do not need 
+    to specify the working directory in your function calls as it is automatically 
+    injected for security reasons.
+    """
+    messages = [types.Content(role="user", parts=[types.Part(text=args.prompt)])]
+    available_functions = make_available_functions()
+    config = types.GenerateContentConfig(tools=[available_functions], 
+                                         system_instruction=system_prompt)
+    
+    # Call agent
+    num_calls = 0
+    while num_calls <= 20:
+        response = call_agent(config, messages)
+        # Add candidate responses to messages
+        for candidate in response.candidates:
+            messages.append(candidate.content)
+        # Process function calls
+        if not response.function_calls:
+            break
+        for func_call in response.function_calls:
+            func_result = call_function(func_call, args.verbose)
+            messages.append(func_result)
+            func_response = func_result.parts[0].function_response.response
+            if not response:
+                raise Exception(f"No response from {func_call.name}")
+            if args.verbose:
+                print(f"-> {func_response}")
+        num_calls += 1
+        
     # Print response
     print(response.text)
     if args.verbose:
